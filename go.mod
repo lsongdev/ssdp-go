@@ -1,3 +1,3 @@
-module github.com/song940/ssdp-go
+module github.com/lsongdev/ssdp-go
 
 go 1.21.4

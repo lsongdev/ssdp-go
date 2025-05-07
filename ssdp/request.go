@@ -34,8 +34,7 @@ func (p *Request) String() string {
 	for name, value := range p.Headers {
 		lines = append(lines, name+": "+value)
 	}
-	lines = append(lines, "")
-	// lines = append(lines, "")
+	lines = append(lines, "", "")
 	return strings.Join(lines, "\r\n")
 }
 

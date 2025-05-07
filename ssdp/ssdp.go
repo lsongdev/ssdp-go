@@ -60,6 +60,9 @@ func (c *Client) Listen() (*net.UDPConn, error) {
 // discovered.
 // https://datatracker.ietf.org/doc/html/draft-cai-ssdp-v1-03
 func (c *Client) Search(searchType string) (out []*SearchResponse, err error) {
+	if searchType == "" {
+		searchType = "ssdp:all"
+	}
 	conn, err := c.Listen()
 	if err != nil {
 		return
@@ -83,9 +86,10 @@ func (c *Client) Search(searchType string) (out []*SearchResponse, err error) {
 	for _, response := range responses {
 		out = append(out, &SearchResponse{
 			Type:     response.Headers["ST"],
+			USN:      response.Headers["USN"],
 			Ext:      response.Headers["EXT"],
-			Server:   response.Headers["Server"],
-			Location: response.Headers["Location"],
+			Server:   response.Headers["SERVER"],
+			Location: response.Headers["LOCATION"],
 			Headers:  response.Headers,
 		})
 	}
