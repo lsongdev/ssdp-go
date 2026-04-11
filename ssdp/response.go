@@ -27,9 +27,14 @@ func readResponses(conn *net.UDPConn) (out []*Response, err error) {
 		if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
 			break // duration reached, return what we've found
 		}
+		if err != nil {
+			// Network error (not timeout), stop listening
+			return nil, err
+		}
 		response, err := parseResponse(buf[:rlen])
 		if err != nil {
-			return nil, err
+			// Skip malformed responses, continue listening
+			continue
 		}
 		response.RemoteAddr = addr.String()
 		out = append(out, response)

@@ -77,7 +77,8 @@ func (c *Client) Search(searchType string) (out []*SearchResponse, err error) {
 		return
 	}
 	// Only listen for responses for duration amount of time.
-	duration := time.Duration(3) * time.Second
+	// Use 5 seconds to give devices adequate response time (MX=3 + 2s buffer)
+	duration := time.Duration(5) * time.Second
 	conn.SetReadDeadline(time.Now().Add(duration))
 	responses, err := readResponses(conn)
 	if err != nil {
