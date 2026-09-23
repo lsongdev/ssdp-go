@@ -3,14 +3,19 @@
 package ssdp
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"strings"
 	"time"
 )
 
 const (
 	MethodSearch = "M-SEARCH"
-	MethodNoify  = "NOTIFY"
+	MethodNoify  = "NOTIFY" // deprecated: use MethodNotify
+	MethodNotify = "NOTIFY"
 )
 
 type Config struct {
@@ -55,44 +60,78 @@ func (c *Client) Listen() (*net.UDPConn, error) {
 	return net.ListenUDP("udp", serverAddr)
 }
 
-// Search the network for SSDP devices using the given search string and duration
-// to discover new devices. This function will return an array of SearchReponses
-// discovered.
-// https://datatracker.ietf.org/doc/html/draft-cai-ssdp-v1-03
-func (c *Client) Search(searchType string) (out []*SearchResponse, err error) {
+// Search keeps the original API and searches for five seconds.
+func (c *Client) Search(searchType string) ([]*SearchResponse, error) {
+	return c.SearchContext(context.Background(), searchType, 5*time.Second)
+}
+
+// SearchContext sends M-SEARCH and collects unicast responses for window.
+// The sending socket uses an ephemeral source port, as required for concurrent
+// discovery clients and for listening alongside a passive notification receiver.
+func (c *Client) SearchContext(ctx context.Context, searchType string, window time.Duration) (out []*SearchResponse, err error) {
+	if window <= 0 {
+		return nil, fmt.Errorf("ssdp: search window must be positive")
+	}
 	if searchType == "" {
 		searchType = "ssdp:all"
 	}
-	conn, err := c.Listen()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{})
 	if err != nil {
-		return
+		return nil, err
 	}
 	defer conn.Close()
 	req := NewRequest(MethodSearch, "*")
 	req.Host = fmt.Sprintf("%s:%d", c.config.Broadcast, c.config.Port)
 	req.AddHeader("ST", searchType)
 	req.AddHeader("MX", "3")
-	_, err = conn.WriteTo(req.Bytes(), req.Address())
-	if err != nil {
-		return
+	target := &net.UDPAddr{IP: net.ParseIP(c.config.Broadcast), Port: c.config.Port}
+	if target.IP == nil {
+		return nil, fmt.Errorf("ssdp: invalid broadcast address %q", c.config.Broadcast)
 	}
-	// Only listen for responses for duration amount of time.
-	// Use 5 seconds to give devices adequate response time (MX=3 + 2s buffer)
-	duration := time.Duration(5) * time.Second
-	conn.SetReadDeadline(time.Now().Add(duration))
-	responses, err := readResponses(conn)
-	if err != nil {
-		return
+	if _, err := conn.WriteToUDP(req.Bytes(), target); err != nil {
+		return nil, err
 	}
-	for _, response := range responses {
+	deadline := time.Now().Add(window)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return nil, err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetReadDeadline(time.Now()) })
+	defer stop()
+	buf := make([]byte, 65507)
+	for {
+		n, source, readErr := conn.ReadFromUDP(buf)
+		if readErr != nil {
+			if ctx.Err() != nil {
+				return out, ctx.Err()
+			}
+			var netErr net.Error
+			if errors.As(readErr, &netErr) && netErr.Timeout() {
+				return out, nil
+			}
+			return out, readErr
+		}
+		packet, parseErr := ParsePacket(buf[:n], source)
+		if parseErr != nil || packet.StartLine != "HTTP/1.1 200 OK" {
+			continue
+		}
 		out = append(out, &SearchResponse{
-			Type:     response.Headers["ST"],
-			USN:      response.Headers["USN"],
-			Ext:      response.Headers["EXT"],
-			Server:   response.Headers["SERVER"],
-			Location: response.Headers["LOCATION"],
-			Headers:  response.Headers,
+			Type: packet.Header.Get("ST"), USN: packet.Header.Get("USN"),
+			Ext: packet.Header.Get("EXT"), Server: packet.Header.Get("SERVER"),
+			Location: packet.Header.Get("LOCATION"), Headers: legacyHeaders(packet.Header),
 		})
 	}
-	return
+}
+
+func legacyHeaders(header http.Header) map[string]string {
+	result := make(map[string]string, len(header))
+	for name := range header {
+		result[strings.ToUpper(name)] = header.Get(name)
+	}
+	return result
 }
