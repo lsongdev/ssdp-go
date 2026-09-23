@@ -7,75 +7,43 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
-	"strings"
 	"time"
 )
 
 const (
 	MethodSearch = "M-SEARCH"
-	MethodNoify  = "NOTIFY" // deprecated: use MethodNotify
 	MethodNotify = "NOTIFY"
 )
 
 type Config struct {
-	Port      int
-	Broadcast string
+	Port    int
+	Address string
 }
 
 type Client struct {
-	config *Config
+	config Config
 }
 
 // Create a new Client
-func NewClient(config *Config) *Client {
-	if config == nil {
-		config = &Config{}
-	}
+func NewClient(config Config) *Client {
 	if config.Port == 0 {
 		config.Port = 1900
 	}
-	if config.Broadcast == "" {
-		config.Broadcast = "239.255.255.250"
+	if config.Address == "" {
+		config.Address = "239.255.255.250"
 	}
 	return &Client{config: config}
 }
 
-// The search response from a device implementing SSDP.
-type SearchResponse struct {
-	Ext      string
-	USN      string
-	Type     string
-	Location string
-	Server   string
-	Headers  map[string]string
-}
-
-func (c *Client) Listen() (*net.UDPConn, error) {
-	address := fmt.Sprintf("0.0.0.0:%d", c.config.Port)
-	serverAddr, err := net.ResolveUDPAddr("udp", address)
-	if err != nil {
-		return nil, err
-	}
-	return net.ListenUDP("udp", serverAddr)
-}
-
-// Search keeps the original API and searches for five seconds.
-func (c *Client) Search(searchType string) ([]*SearchResponse, error) {
-	return c.SearchContext(context.Background(), searchType, 5*time.Second)
-}
-
-// SearchContext sends M-SEARCH and collects unicast responses for window.
-// The sending socket uses an ephemeral source port, as required for concurrent
-// discovery clients and for listening alongside a passive notification receiver.
-func (c *Client) SearchContext(ctx context.Context, searchType string, window time.Duration) (out []*SearchResponse, err error) {
-	if window <= 0 {
-		return nil, fmt.Errorf("ssdp: search window must be positive")
-	}
+// Search sends M-SEARCH and collects responses until the context ends or the
+// default five-second search window elapses. A caller may use a shorter deadline.
+func (c *Client) Search(ctx context.Context, searchType string) (out []Packet, err error) {
+	searchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	if searchType == "" {
 		searchType = "ssdp:all"
 	}
-	if err := ctx.Err(); err != nil {
+	if err := searchCtx.Err(); err != nil {
 		return nil, err
 	}
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{})
@@ -84,24 +52,22 @@ func (c *Client) SearchContext(ctx context.Context, searchType string, window ti
 	}
 	defer conn.Close()
 	req := NewRequest(MethodSearch, "*")
-	req.Host = fmt.Sprintf("%s:%d", c.config.Broadcast, c.config.Port)
+	req.Host = fmt.Sprintf("%s:%d", c.config.Address, c.config.Port)
 	req.AddHeader("ST", searchType)
 	req.AddHeader("MX", "3")
-	target := &net.UDPAddr{IP: net.ParseIP(c.config.Broadcast), Port: c.config.Port}
+	target := &net.UDPAddr{IP: net.ParseIP(c.config.Address), Port: c.config.Port}
 	if target.IP == nil {
-		return nil, fmt.Errorf("ssdp: invalid broadcast address %q", c.config.Broadcast)
+		return nil, fmt.Errorf("ssdp: invalid broadcast address %q", c.config.Address)
 	}
 	if _, err := conn.WriteToUDP(req.Bytes(), target); err != nil {
 		return nil, err
 	}
-	deadline := time.Now().Add(window)
-	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-		deadline = ctxDeadline
+	if deadline, ok := searchCtx.Deadline(); ok {
+		if err := conn.SetReadDeadline(deadline); err != nil {
+			return nil, err
+		}
 	}
-	if err := conn.SetReadDeadline(deadline); err != nil {
-		return nil, err
-	}
-	stop := context.AfterFunc(ctx, func() { _ = conn.SetReadDeadline(time.Now()) })
+	stop := context.AfterFunc(searchCtx, func() { _ = conn.SetReadDeadline(time.Now()) })
 	defer stop()
 	buf := make([]byte, 65507)
 	for {
@@ -120,18 +86,6 @@ func (c *Client) SearchContext(ctx context.Context, searchType string, window ti
 		if parseErr != nil || packet.StartLine != "HTTP/1.1 200 OK" {
 			continue
 		}
-		out = append(out, &SearchResponse{
-			Type: packet.Header.Get("ST"), USN: packet.Header.Get("USN"),
-			Ext: packet.Header.Get("EXT"), Server: packet.Header.Get("SERVER"),
-			Location: packet.Header.Get("LOCATION"), Headers: legacyHeaders(packet.Header),
-		})
+		out = append(out, packet)
 	}
-}
-
-func legacyHeaders(header http.Header) map[string]string {
-	result := make(map[string]string, len(header))
-	for name := range header {
-		result[strings.ToUpper(name)] = header.Get(name)
-	}
-	return result
 }

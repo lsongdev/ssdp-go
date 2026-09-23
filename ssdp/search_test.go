@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestSearchContext(t *testing.T) {
+func TestSearch(t *testing.T) {
 	server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
@@ -30,9 +30,11 @@ func TestSearchContext(t *testing.T) {
 		_, e = server.WriteToUDP([]byte("HTTP/1.1 200 OK\r\nLocation: yeelight://127.0.0.1:55443\r\nid: bulb\r\n\r\n"), remote)
 		done <- e
 	}()
-	client := NewClient(&Config{Port: server.LocalAddr().(*net.UDPAddr).Port, Broadcast: "127.0.0.1"})
-	results, err := client.SearchContext(context.Background(), "wifi_bulb", 100*time.Millisecond)
-	if err != nil || len(results) != 1 || results[0].Location != "yeelight://127.0.0.1:55443" {
+	client := NewClient(Config{Port: server.LocalAddr().(*net.UDPAddr).Port, Address: "127.0.0.1"})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	results, err := client.Search(ctx, "wifi_bulb")
+	if err != context.DeadlineExceeded || len(results) != 1 || results[0].Header.Get("Location") != "yeelight://127.0.0.1:55443" {
 		t.Fatalf("results=%+v err=%v", results, err)
 	}
 	if err := <-done; err != nil {
