@@ -19,7 +19,52 @@ func TestParsePacketProfiles(t *testing.T) {
 			}
 		})
 	}
-	if _, err := ParsePacket([]byte("garbage\r\n"), source); err == nil {
-		t.Fatal("accepted bad start line")
+}
+
+func TestParsePacketStartLine(t *testing.T) {
+	for _, tc := range []struct {
+		wire, method, target string
+		status               int
+	}{
+		{"HTTP/1.1 200 OK\r\n\r\n", "", "", 200},
+		{"HTTP/1.1 200\r\n\r\n", "", "", 200},
+		{"HTTP/1.0 200 OK\r\n\r\n", "", "", 200},
+		{"HTTP/1.1 404 Not Found\r\n\r\n", "", "", 404},
+		{"HTTP/1.1 200 OK", "", "", 200},
+		{"HTTP/1.1 200 OK\n\n", "", "", 200},
+		{"NOTIFY * HTTP/1.1\r\n\r\n", "NOTIFY", "*", 0},
+		{"M-SEARCH * HTTP/1.1\r\n\r\n", "M-SEARCH", "*", 0},
+	} {
+		p, err := ParsePacket([]byte(tc.wire), nil)
+		if err != nil || p.Method != tc.method || p.Target != tc.target || p.StatusCode != tc.status {
+			t.Errorf("%q: packet=%+v err=%v", tc.wire, p, err)
+		}
+	}
+	for _, wire := range []string{
+		"", "\r\n", "garbage\r\n", "http/1.1 200 ok\r\n\r\n", "HTTP/1.1\r\n\r\n", "HTTP/1.1 abc\r\n\r\n",
+		"HTTP/1.1 99 Low\r\n\r\n", "HTTP/2 200 OK\r\n\r\n", "NOTIFY *\r\n\r\n", " * HTTP/1.1\r\n\r\n", "NOTIFY * HTTP/2\r\n\r\n",
+	} {
+		if p, err := ParsePacket([]byte(wire), nil); err == nil {
+			t.Errorf("%q accepted: %+v", wire, p)
+		}
+	}
+}
+
+func TestParsePacketHeaders(t *testing.T) {
+	wire := "HTTP/1.1 200 OK\nbad line\r\n: no name\r\nfw_ver: 18\r\nSpaced : value\r\n folded: continuation\r\nLOCATION:  a:b:c  \r\nExt:\r\n\r\nBody: ignored\r\n"
+	p, err := ParsePacket([]byte(wire), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"FW_VER": "18", "Spaced": "value", "Location": "a:b:c", "Body": "", "folded": ""} {
+		if got := p.Header.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	if _, present := p.Header["Ext"]; !present {
+		t.Error("empty header dropped")
+	}
+	if len(p.Header) != 4 {
+		t.Errorf("headers = %v", p.Header)
 	}
 }

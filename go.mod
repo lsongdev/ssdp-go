@@ -1,3 +1,7 @@
 module github.com/lsongdev/ssdp-go
 
-go 1.21.4
+go 1.26.0
+
+require golang.org/x/net v0.62.0
+
+require golang.org/x/sys v0.49.0 // indirect

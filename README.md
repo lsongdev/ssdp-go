@@ -32,6 +32,36 @@ func main() {
 }
 ```
 
+Use `SearchFunc` to handle responses as they arrive and stop as soon as you have
+what you need:
+
+```go
+err := client.SearchFunc(ctx, "upnp:rootdevice", func(p ssdp.Packet) bool {
+  fmt.Println(p.Header.Get("Location"))
+  return true // stop after the first response
+})
+```
+
+## searching
+
+- Each search is sent `Config.Sends` times (default 3), 200ms apart, on every
+  usable interface. `Config.Interfaces` selects specific interfaces.
+- Multicast packets use `Config.TTL` (default 2), and requests ask devices to
+  reply within `Config.MX` seconds (default 3).
+- A search collects responses for `Config.Window` (default MX + 2 seconds). A
+  context can end it earlier but cannot extend it.
+- The window ending or a context deadline passing is a normal end, not an error.
+  If the context is canceled, `Search` returns the responses so far and
+  `context.Canceled`. A context that has already ended returns its error at once.
+- Non-200 responses and repeats of the same source, USN, ST and Location are
+  dropped. ST is not checked, because vendor protocols may omit it.
+- `Config.Headers` adds request headers such as `USER-AGENT` or `CPFN.UPNP.ORG`.
+
+## scope
+
+This package is an IPv4 control point. It does not advertise or answer searches
+as a device, and it does not support IPv6.
+
 ## license
 
 This project is under MIT license.
@@ -50,12 +80,10 @@ fields:
 | Yeelight | `239.255.255.250:1982` | `M-SEARCH` and `NOTIFY`; `ST: wifi_bulb` |
 | Bambu Lab | IPv4 broadcast UDP `2021` | periodic `NOTIFY`; printer serial in `USN` |
 
-`Search(ctx, target)` returns parsed packets and performs a five-second search
-using an ephemeral source port. The context can end it earlier.
-`ListenNotifications`
-receives passive advertisements until the context ends or a callback stops it,
-then closes its socket. `ParsePacket` exposes case-insensitive headers and the UDP
-source address so device libraries can interpret vendor fields.
+`ListenNotifications` receives passive advertisements until a callback stops it,
+which returns nil, or the context ends, which returns the context's error. It then
+closes its socket. `ParsePacket` exposes the method or status code, case-insensitive
+headers and the UDP source address so device libraries can interpret vendor fields.
 
 ```go
 client := ssdp.NewClient(ssdp.Config{Port: 2021, Address: "255.255.255.255"})
